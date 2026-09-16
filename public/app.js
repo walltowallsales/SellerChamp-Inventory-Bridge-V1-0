@@ -12,9 +12,22 @@ async function diagnose(){
  $('diagBtn').disabled=true;$('diagBtn').textContent='RUNNING…';$('diagnostic').classList.add('hidden');
  try{const d=await api('/api/diagnostic/'+encodeURIComponent(code));renderDiagnostic(d)}catch(e){toast(e.message,true)}finally{$('diagBtn').disabled=false;$('diagBtn').textContent='RUN BATCH DIAGNOSTIC'}
 }
+$('productDiagBtn').onclick=productDiagnose;
+async function productDiagnose(){
+ const code=$('sku').value.trim();if(!code)return toast('Enter an SKU first.',true);
+ $('productDiagBtn').disabled=true;$('productDiagBtn').textContent='RUNNING…';$('diagnostic').classList.add('hidden');
+ try{const d=await api('/api/product-diagnostic/'+encodeURIComponent(code));renderProductDiagnostic(d)}catch(e){toast(e.message,true)}finally{$('productDiagBtn').disabled=false;$('productDiagBtn').textContent='RUN PRODUCT RECORD DIAGNOSTIC'}
+}
+function renderProductDiagnostic(d){
+ const p=d.product;
+ const probes=(d.probes||[]).map(x=>`<div class="batchrow"><strong>${esc(x.endpoint)}</strong><br>${x.ok?`HTTP OK · records: ${x.count} · exact SKU matches: <strong>${x.exact_matches}</strong>`:`HTTP ${x.http_status||'error'} · ${esc(x.error||'Unavailable')}`}</div>`).join('');
+ const related=(d.related||[]).map(x=>`<div class="batchrow"><strong>${esc(x.endpoint)}</strong><br>${x.ok?`HTTP OK${x.interesting?.length?`<details><summary>Interesting fields (${x.interesting.length})</summary><pre>${esc(JSON.stringify(x.interesting,null,2))}</pre></details>`:''}<details><summary>Returned record</summary><pre>${esc(JSON.stringify(x.data,null,2))}</pre></details>`:`HTTP ${x.http_status||'error'} · ${esc(x.error||'Unavailable')}`}</div>`).join('');
+ $('diagnostic').innerHTML=`<section class="card item"><h2>Product Record Diagnostic — ${esc(d.code)}</h2><p><strong>Read-only.</strong> No SellerChamp data was changed.</p><div class="productBox"><b>Summary</b><div>Exact Product found: <strong>${p?'Yes':'No'}</strong></div>${p?`<div>Product ID: <strong>${esc(p.id)}</strong></div><div>SKU: <strong>${esc(p.sku)}</strong></div>`:''}</div>${p?`<div class="productBox"><b>Interesting fields from Product search record</b><pre>${esc(JSON.stringify(p.interesting,null,2))}</pre><details><summary>Full Product search record</summary><pre>${esc(JSON.stringify(p.raw,null,2))}</pre></details></div>`:''}<div class="productBox"><b>Product lookup probes</b>${probes}</div>${related?`<div class="productBox"><b>Related Product endpoints</b>${related}</div>`:''}</section>`;
+ $('diagnostic').classList.remove('hidden');
+}
 function renderDiagnostic(d){
  const found=(d.probes||[]).filter(x=>x.ok&&x.matches?.length), details=d.master_details||[];
- const rows=(d.probes||[]).map(x=>`<div class="batchrow"><strong>${esc(x.endpoint)}</strong><br>${x.ok?`HTTP OK · matches: <strong>${x.matches.length}</strong>${x.matches.length?`<pre>${esc(JSON.stringify(x.matches,null,2))}</pre>`:''}`:`HTTP ${x.http_status||'error'} · ${esc(typeof x.error==='string'?x.error:JSON.stringify(x.error))}`}</div>`).join('');
+ const rows=(d.probes||[]).map(x=>`<div class="batchrow"><strong>${esc(x.endpoint)}</strong><br>${x.ok?`HTTP OK · matches: <strong>${x.matches.length}</strong>${x.matches.length?`<pre>${esc(JSON.stringify(x.matches,null,2))}</pre>`:''}`:`HTTP ${x.http_status||'error'} · ${esc(x.http_status===404?'Route not available in SellerChamp API.':(typeof x.error==='string'?x.error:'SellerChamp rejected this route.'))}`}</div>`).join('');
  $('diagnostic').innerHTML=`<section class="card item"><h2>Batch API Diagnostic — ${esc(d.code)}</h2><p><strong>Read-only.</strong> No SellerChamp data was changed.</p><div class="productBox"><b>Summary</b><div>Endpoints containing this SKU: <strong>${found.length}</strong></div><div>Master-batch detail matches: <strong>${details.length}</strong></div></div>${details.length?`<div class="productBox"><b>Master batch detail matches</b><pre>${esc(JSON.stringify(details,null,2))}</pre></div>`:''}<div class="productBox"><b>Endpoint probes</b>${rows}</div></section>`;
  $('diagnostic').classList.remove('hidden');
 }

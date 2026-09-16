@@ -12,7 +12,7 @@ function lineCode(x){return String(x.catalogue_sku||x.sku||x.upc||'').trim()}
 function isUnsubmitted(x){const pending=n(x.quantity_pending);return pending>0 || (!x.quantity_received && n(x.quantity)>0)}
 async function findBatchLines(code){const wanted=String(code).trim().toLowerCase(),batches=await activeBatches(),hits=[];for(const b0 of batches){let b;try{b=await batchDetail(b0.id)}catch{continue}for(const x of (b.lines||[])){const vals=[x.catalogue_sku,x.sku,x.upc].map(v=>String(v||'').trim().toLowerCase());if(vals.includes(wanted)&&isUnsubmitted(x))hits.push({batch_id:b.id,batch_name:b.name||b0.name||String(b.id),line_id:x.id,sku:lineCode(x),title:x.title||'',image:x.primary_image||'',location:x.location||'',quantity:n(x.quantity_pending)>0?n(x.quantity_pending):n(x.quantity),quantity_total:n(x.quantity),quantity_received:n(x.quantity_received),quantity_pending:n(x.quantity_pending)})}}return hits}
 function combine(code,product,batchLines){const productQty=product?n(product.quantity_available):0;const batchQty=batchLines.reduce((s,x)=>s+n(x.quantity),0);const locMap=new Map();for(const l of (product?.locations||[])){if(n(l.quantity_available)>0)locMap.set(l.location,(locMap.get(l.location)||0)+n(l.quantity_available))}for(const x of batchLines){if(x.location)locMap.set(x.location,(locMap.get(x.location)||0)+n(x.quantity))}return{code,product,batch_lines:batchLines,effective_quantity:productQty+batchQty,product_quantity:productQty,batch_quantity:batchQty,effective_locations:[...locMap].map(([location,quantity])=>({location,quantity})),status:batchQty>0?(productQty>0?'Product + unsubmitted batch':'Waiting for submission'):'Product inventory only'}}
-app.get('/api/status',async(req,res)=>{try{await scFetch('/api/marketplace_accounts');res.json({ok:true,version:'1.2.0',pinRequired:!!APP_PIN})}catch(e){res.status(e.status||500).json({error:'Could not connect to SellerChamp.',details:e.data||e.message})}});
+app.get('/api/status',async(req,res)=>{try{await scFetch('/api/marketplace_accounts');res.json({ok:true,version:'1.3.0',pinRequired:!!APP_PIN})}catch(e){res.status(e.status||500).json({error:'Could not connect to SellerChamp.',details:e.data||e.message})}});
 app.get('/api/inventory/:code',async(req,res)=>{try{const code=req.params.code.trim();const [product,batchLines]=await Promise.all([productByCode(code),findBatchLines(code)]);if(!product&&!batchLines.length)return res.status(404).json({error:'SKU was not found in Products or active unsubmitted batches.'});res.json({inventory:combine(code,product,batchLines)})}catch(e){res.status(e.status||500).json({error:'Combined inventory lookup failed.',details:e.data||e.message})}});
 app.get('/api/batches',async(req,res)=>{try{res.json({batches:await activeBatches()})}catch(e){res.status(e.status||500).json({error:'Could not load SellerChamp batches.',details:e.data||e.message})}});
 
@@ -50,7 +50,56 @@ app.get('/api/diagnostic/:code',async(req,res)=>{
     // Also inspect details for master batches, which may hide line data from the index.
     let master_details=[];
     try{const bs=await activeBatches();for(const b of bs.slice(0,250)){try{const d=await batchDetail(b.id);const m=deepMatches(d,String(code).toLowerCase());if(m.length)master_details.push({batch_id:b.id,batch_name:b.name||'',matches:m})}catch{}}}catch{}
-    res.json({version:'1.2.0',code,read_only:true,probes,master_details});
+    res.json({version:'1.3.0',code,read_only:true,probes,master_details});
   }catch(e){res.status(500).json({error:'Diagnostic failed.',details:e.message})}
 });
-app.listen(PORT,()=>console.log(`SellerChamp Inventory Bridge v1.2.0 on ${PORT}`));
+
+function summarizeValue(v, depth=0){
+  if(v==null || typeof v==='string' || typeof v==='number' || typeof v==='boolean') return v;
+  if(depth>=4) return Array.isArray(v)?`[Array ${v.length}]`:'[Object]';
+  if(Array.isArray(v)) return v.slice(0,50).map(x=>summarizeValue(x,depth+1));
+  const out={}; for(const [k,val] of Object.entries(v).slice(0,150)) out[k]=summarizeValue(val,depth+1); return out;
+}
+function interestingProductFields(obj,path='',out=[]){
+  if(out.length>=250 || obj==null)return out;
+  if(Array.isArray(obj)){obj.forEach((v,i)=>interestingProductFields(v,`${path}[${i}]`,out));return out}
+  if(typeof obj==='object'){
+    for(const [k,v] of Object.entries(obj)){
+      const p=path?`${path}.${k}`:k;
+      if(/batch|location|qty|quantity|inventory|submit|status|sku|catalog|upc|listing|marketplace|channel|offer|id/i.test(k) && (v==null || ['string','number','boolean'].includes(typeof v))) out.push({path:p,value:v});
+      interestingProductFields(v,p,out);
+    }
+  }
+  return out;
+}
+async function rawProductDiagnostics(code){
+  const q=encodeURIComponent(code), wanted=String(code).trim().toLowerCase();
+  const endpoints=[
+    `/api/products.json?sku=${q}&page=1&page_size=50`,
+    `/api/products.json?catalog_sku=${q}&page=1&page_size=50`,
+    `/api/products.json?upc=${q}&page=1&page_size=50`,
+    `/api/products.json?query=${q}&page=1&page_size=50`
+  ];
+  const probes=[]; let chosen=null;
+  for(const ep of endpoints){
+    try{
+      const d=await scFetch(ep), arr=d.products||[];
+      const matches=arr.filter(x=>[x.sku,x.custom_catalogue_sku,x.catalog_sku,x.upc].some(v=>String(v||'').trim().toLowerCase()===wanted));
+      probes.push({endpoint:ep,ok:true,count:arr.length,exact_matches:matches.length});
+      if(!chosen && matches.length) chosen=matches[0];
+    }catch(e){probes.push({endpoint:ep,ok:false,http_status:e.status||500,error:typeof e.data==='object'?'SellerChamp rejected this route/query.':String(e.data||e.message)})}
+  }
+  if(!chosen) return {probes,product:null};
+  const related=[];
+  for(const ep of [`/api/products/${encodeURIComponent(chosen.id)}`,`/api/products/${encodeURIComponent(chosen.id)}.json`,`/api/products/${encodeURIComponent(chosen.id)}/inventory_locations`]){
+    try{const d=await scFetch(ep);related.push({endpoint:ep,ok:true,data:summarizeValue(d),interesting:interestingProductFields(d)})}
+    catch(e){related.push({endpoint:ep,ok:false,http_status:e.status||500,error:'Route not available.'})}
+  }
+  return {probes,product:{id:chosen.id,sku:chosen.sku||'',title:chosen.title||'',raw:summarizeValue(chosen),interesting:interestingProductFields(chosen)},related};
+}
+app.get('/api/product-diagnostic/:code',async(req,res)=>{
+  try{const code=req.params.code.trim();const d=await rawProductDiagnostics(code);res.json({version:'1.3.0',code,read_only:true,...d})}
+  catch(e){res.status(e.status||500).json({error:'Product diagnostic failed.',details:e.data||e.message})}
+});
+
+app.listen(PORT,()=>console.log(`SellerChamp Inventory Bridge v1.3.0 on ${PORT}`));
