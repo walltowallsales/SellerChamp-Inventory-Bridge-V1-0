@@ -1,0 +1,16 @@
+{
+  "name": "sellerchamp-inventory-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SellerChamp batch-to-product inventory reconciliation and receiving tool",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
