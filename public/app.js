@@ -32,3 +32,16 @@ function renderDiagnostic(d){
  $('diagnostic').classList.remove('hidden');
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}status();
+
+$('webDiagBtn').onclick=webDiagnose;
+async function webDiagnose(){
+ const code=$('sku').value.trim();if(!code)return toast('Enter an SKU first.',true);
+ $('webDiagBtn').disabled=true;$('webDiagBtn').textContent='RUNNING…';$('diagnostic').classList.add('hidden');
+ try{const d=await api('/api/web-route-diagnostic/'+encodeURIComponent(code));renderWebDiagnostic(d)}catch(e){toast(e.message,true)}finally{$('webDiagBtn').disabled=false;$('webDiagBtn').textContent='RUN WEB ROUTE DIAGNOSTIC'}
+}
+function renderWebDiagnostic(d){
+ const useful=(d.probes||[]).filter(x=>x.http_status>=200&&x.http_status<400);
+ const rows=(d.probes||[]).map(x=>`<div class="batchrow"><strong>${esc(x.host)}${esc(x.endpoint)}</strong><br>HTTP ${x.http_status||'error'} · ${esc(x.content_type||'')}${x.json?' · JSON':''}${x.error?` · ${esc(x.error)}`:''}${x.snippet?`<details><summary>Response preview</summary><pre>${esc(x.snippet)}</pre></details>`:''}</div>`).join('');
+ $('diagnostic').innerHTML=`<section class="card item"><h2>Web Route Diagnostic — ${esc(d.code)}</h2><p><strong>Read-only.</strong> This tests the SellerChamp web-app host (app2) and API host using GET requests only.</p><div class="productBox"><b>Summary</b><div>Successful/redirecting routes: <strong>${useful.length}</strong></div><div>We are looking for a response that exposes Batch #338, Qty 6, Location C0221, or a route that redirects to SellerChamp sign-in.</div></div><div class="productBox"><b>Route probes</b>${rows}</div></section>`;
+ $('diagnostic').classList.remove('hidden');
+}

@@ -1,11 +1,5 @@
-# SellerChamp Inventory Bridge v1.3.0
+# SellerChamp Inventory Bridge v1.4.0
 
-Read-only combined inventory lookup for Stuff2Sell.
+Read-only diagnostic build. Adds a Web Route Diagnostic that probes SellerChamp's app2 web host and documented API host with GET requests only, looking for the legacy Batches resource used by the SellerChamp UI.
 
-## What changed in v1.3
-- Added Product Record Diagnostic for a known SKU.
-- Shows the exact Product API record and useful nested fields.
-- Probes Product detail and inventory-location endpoints using the resolved Product ID.
-- Keeps the Batch API Diagnostic from v1.2.
-- Suppresses giant SellerChamp HTML 404 pages in diagnostic output.
-- No SellerChamp data is changed.
+No inventory changes are made.

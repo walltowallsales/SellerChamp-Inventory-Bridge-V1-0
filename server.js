@@ -1,6 +1,6 @@
 'use strict';
 const express=require('express'); const path=require('path');
-const app=express(); const PORT=process.env.PORT||3000; const TOKEN=process.env.SELLERCHAMP_TOKEN||''; const APP_PIN=process.env.APP_PIN||''; const SC='https://app.sellerchamp.com';
+const app=express(); const PORT=process.env.PORT||3000; const TOKEN=process.env.SELLERCHAMP_TOKEN||''; const APP_PIN=process.env.APP_PIN||''; const SC='https://app.sellerchamp.com'; const SC2='https://app2.sellerchamp.com';
 app.use(express.json({limit:'500kb'})); app.use(express.static(path.join(__dirname,'public')));
 function guard(req,res,next){if(!TOKEN)return res.status(503).json({error:'SELLERCHAMP_TOKEN is not configured on the server.'});if(APP_PIN&&(req.get('x-app-pin')||'')!==APP_PIN)return res.status(401).json({error:'Incorrect app PIN.'});next()} app.use('/api',guard);
 async function scFetch(ep,opt={}){const r=await fetch(SC+ep,{...opt,headers:{Token:TOKEN,'Content-Type':'application/json',...(opt.headers||{})}});const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch{d={raw:t}}if(!r.ok){const e=new Error(`SellerChamp returned ${r.status}`);e.status=r.status;e.data=d;throw e}return d}
@@ -12,7 +12,7 @@ function lineCode(x){return String(x.catalogue_sku||x.sku||x.upc||'').trim()}
 function isUnsubmitted(x){const pending=n(x.quantity_pending);return pending>0 || (!x.quantity_received && n(x.quantity)>0)}
 async function findBatchLines(code){const wanted=String(code).trim().toLowerCase(),batches=await activeBatches(),hits=[];for(const b0 of batches){let b;try{b=await batchDetail(b0.id)}catch{continue}for(const x of (b.lines||[])){const vals=[x.catalogue_sku,x.sku,x.upc].map(v=>String(v||'').trim().toLowerCase());if(vals.includes(wanted)&&isUnsubmitted(x))hits.push({batch_id:b.id,batch_name:b.name||b0.name||String(b.id),line_id:x.id,sku:lineCode(x),title:x.title||'',image:x.primary_image||'',location:x.location||'',quantity:n(x.quantity_pending)>0?n(x.quantity_pending):n(x.quantity),quantity_total:n(x.quantity),quantity_received:n(x.quantity_received),quantity_pending:n(x.quantity_pending)})}}return hits}
 function combine(code,product,batchLines){const productQty=product?n(product.quantity_available):0;const batchQty=batchLines.reduce((s,x)=>s+n(x.quantity),0);const locMap=new Map();for(const l of (product?.locations||[])){if(n(l.quantity_available)>0)locMap.set(l.location,(locMap.get(l.location)||0)+n(l.quantity_available))}for(const x of batchLines){if(x.location)locMap.set(x.location,(locMap.get(x.location)||0)+n(x.quantity))}return{code,product,batch_lines:batchLines,effective_quantity:productQty+batchQty,product_quantity:productQty,batch_quantity:batchQty,effective_locations:[...locMap].map(([location,quantity])=>({location,quantity})),status:batchQty>0?(productQty>0?'Product + unsubmitted batch':'Waiting for submission'):'Product inventory only'}}
-app.get('/api/status',async(req,res)=>{try{await scFetch('/api/marketplace_accounts');res.json({ok:true,version:'1.3.0',pinRequired:!!APP_PIN})}catch(e){res.status(e.status||500).json({error:'Could not connect to SellerChamp.',details:e.data||e.message})}});
+app.get('/api/status',async(req,res)=>{try{await scFetch('/api/marketplace_accounts');res.json({ok:true,version:'1.4.0',pinRequired:!!APP_PIN})}catch(e){res.status(e.status||500).json({error:'Could not connect to SellerChamp.',details:e.data||e.message})}});
 app.get('/api/inventory/:code',async(req,res)=>{try{const code=req.params.code.trim();const [product,batchLines]=await Promise.all([productByCode(code),findBatchLines(code)]);if(!product&&!batchLines.length)return res.status(404).json({error:'SKU was not found in Products or active unsubmitted batches.'});res.json({inventory:combine(code,product,batchLines)})}catch(e){res.status(e.status||500).json({error:'Combined inventory lookup failed.',details:e.data||e.message})}});
 app.get('/api/batches',async(req,res)=>{try{res.json({batches:await activeBatches()})}catch(e){res.status(e.status||500).json({error:'Could not load SellerChamp batches.',details:e.data||e.message})}});
 
@@ -50,7 +50,7 @@ app.get('/api/diagnostic/:code',async(req,res)=>{
     // Also inspect details for master batches, which may hide line data from the index.
     let master_details=[];
     try{const bs=await activeBatches();for(const b of bs.slice(0,250)){try{const d=await batchDetail(b.id);const m=deepMatches(d,String(code).toLowerCase());if(m.length)master_details.push({batch_id:b.id,batch_name:b.name||'',matches:m})}catch{}}}catch{}
-    res.json({version:'1.3.0',code,read_only:true,probes,master_details});
+    res.json({version:'1.4.0',code,read_only:true,probes,master_details});
   }catch(e){res.status(500).json({error:'Diagnostic failed.',details:e.message})}
 });
 
@@ -97,9 +97,32 @@ async function rawProductDiagnostics(code){
   }
   return {probes,product:{id:chosen.id,sku:chosen.sku||'',title:chosen.title||'',raw:summarizeValue(chosen),interesting:interestingProductFields(chosen)},related};
 }
-app.get('/api/product-diagnostic/:code',async(req,res)=>{
-  try{const code=req.params.code.trim();const d=await rawProductDiagnostics(code);res.json({version:'1.3.0',code,read_only:true,...d})}
+async function hostProbe(host,ep){
+  try{
+    const r=await fetch(host+ep,{headers:{Token:TOKEN,'Content-Type':'application/json','Accept':'application/json'}});
+    const t=await r.text(); let d; try{d=t?JSON.parse(t):{}}catch{d=null}
+    const snippet=d?JSON.stringify(d).slice(0,1200):t.replace(/\s+/g,' ').slice(0,350);
+    return {host,endpoint:ep,http_status:r.status,content_type:r.headers.get('content-type')||'',json:!!d,snippet};
+  }catch(e){return {host,endpoint:ep,http_status:0,error:e.message}}
+}
+app.get('/api/web-route-diagnostic/:code',async(req,res)=>{
+  const code=req.params.code.trim(),q=encodeURIComponent(code);
+  // app2.sellerchamp.com is the host used by the SellerChamp UI. These are READ-ONLY probes only.
+  const paths=[
+    `/batches/338.json`, `/batches/338`,
+    `/batches.json?query=${q}`, `/batches?query=${q}`,
+    `/batch_items.json?query=${q}`, `/batch_items?query=${q}`,
+    `/api/batches.json?query=${q}`, `/api/batches?query=${q}`,
+    `/api/batch_items.json?query=${q}`, `/api/batch_items?query=${q}`,
+    `/products.json?sku=${q}`, `/products?product%5Bquery%5D=${q}`
+  ];
+  const probes=[]; for(const host of [SC2,SC]) for(const ep of paths) probes.push(await hostProbe(host,ep));
+  res.json({version:'1.4.0',code,read_only:true,note:'These probes test the SellerChamp web-app host as well as the documented API host. No POST, PUT, PATCH, or DELETE requests are made.',probes});
+});
+
+app.get('/api/product-diagnostic/:code' ,async(req,res)=>{
+  try{const code=req.params.code.trim();const d=await rawProductDiagnostics(code);res.json({version:'1.4.0',code,read_only:true,...d})}
   catch(e){res.status(e.status||500).json({error:'Product diagnostic failed.',details:e.data||e.message})}
 });
 
-app.listen(PORT,()=>console.log(`SellerChamp Inventory Bridge v1.3.0 on ${PORT}`));
+app.listen(PORT,()=>console.log(`SellerChamp Inventory Bridge v1.4.0 on ${PORT}`));
